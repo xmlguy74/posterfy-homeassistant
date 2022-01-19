@@ -1,0 +1,11 @@
+{
+  "codeowners": ["@xmlguy74"],
+  "config_flow": false,
+  "dependencies": [],
+  "documentation": "https://github.com/xmlguy74/posterfy-homeassistant",
+  "domain": "posterfy",
+  "iot_class": "cloud_polling",
+  "name": "Posterfy",
+  "requirements": [],
+  "version": "1.0.0"
+}
