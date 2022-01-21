@@ -4,14 +4,11 @@ import datetime
 import re
 import aiohttp
 from typing import Any, Callable, Dict, Optional
-from xml.etree import ElementTree
-
-from .const import (
-    FANDANGO_COMINGSOON_RSS,
-    FANDANGO_NEWMOVIES_RSS,
-)
+import voluptuous as vol
+import datetime
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.typing import (
     ConfigType,
@@ -19,15 +16,30 @@ from homeassistant.helpers.typing import (
     HomeAssistantType,
 )
 
+import homeassistant.helpers.config_validation as cv
+from homeassistant.const import (
+    CONF_NAME,
+    CONF_API_KEY,
+    CONF_URL,
+    CONF_SERVICE,
+)
+
+from .const import SERVICE_TYPE_TMDB, SERVICE_TYPES
+
 _LOGGER = logging.getLogger(__name__)
 
 # Time between updating data from movie feeds
 SCAN_INTERVAL = datetime.timedelta(minutes=120)
 
-# Use a regex to parse the fandago image renderer url
-FANDANGO_IMAGERENDERER_LINK_RE = re.compile(
-    r"(?P<prefix>https://images.fandango.com/)(?P<version>[^/]+)/ImageRenderer/(?P<width>\d+)/(?P<height>\d+)(?P<suffix>.+)"
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_NAME): cv.string,
+        vol.Required(CONF_API_KEY): cv.string,
+        vol.Required(CONF_URL): cv.url,
+        vol.Required(CONF_SERVICE): vol.All(cv.string, vol.In(SERVICE_TYPES)),
+    }
 )
+
 
 async def async_setup_platform(
     hass: HomeAssistantType,
@@ -37,19 +49,36 @@ async def async_setup_platform(
 ) -> None:
     """Set up the sensor platform."""
     session = async_get_clientsession(hass)
-    sensors = [PosterfySensor(session)]
-    async_add_entities(sensors, update_before_add=True)
 
-class PosterfySensor(Entity):
-    """Representation of a posterfy sensor."""
+    sensors = []
+    _LOGGER.info("Found config for posterfy " + config[CONF_SERVICE])
+    if config[CONF_SERVICE] == SERVICE_TYPE_TMDB:
+        sensors.append(
+            PosterfyTmdbSensor(
+                config[CONF_NAME], session, config[CONF_URL], config[CONF_API_KEY]
+            )
+        )
 
-    def __init__(self, session: aiohttp.client.ClientSession):
+    if len(sensors) > 0:
+        async_add_entities(sensors, update_before_add=True)
+
+
+class PosterfyTmdbSensor(Entity):
+    """Representation of a TMDB posterfy sensor."""
+
+    def __init__(
+        self,
+        name: str,
+        session: aiohttp.client.ClientSession,
+        base_url: str,
+        api_key: str,
+    ):
         super().__init__()
         self.session = session
-        self.attrs: Dict[str, Any] = {
-            "movies": []
-        }
-        self._name = "Posterfy Feed"
+        self.base_url = base_url
+        self.api_key = api_key
+        self.attrs: Dict[str, Any] = {"movies": []}
+        self._name = name
         self._state = None
         self._available = True
 
@@ -61,7 +90,7 @@ class PosterfySensor(Entity):
     @property
     def unique_id(self) -> str:
         """Return the unique ID of the sensor."""
-        return "d730055a-2c26-486a-b3b9-80bb86946f75"
+        return self._name
 
     @property
     def available(self) -> bool:
@@ -76,38 +105,50 @@ class PosterfySensor(Entity):
     def extra_state_attributes(self) -> Dict[str, Any]:
         return self.attrs
 
-    def fixUpPosterImage(self, url: str) -> str:
-        match = FANDANGO_IMAGERENDERER_LINK_RE.match(url)
-        if match is not None:
-            url = match.group("prefix") + "/" + match.group("version") + "/ImageRenderer/500/1000" + match.group("suffix")
-        return url
-
-    async def fillFandangoFeed(self, category, rss, movies):
+    async def fillFeed(self, category, url, movies):
         # get the updated feed data
-        async with self.session.get(rss) as resp:
-            rss = await resp.text()
-            root = ElementTree.fromstring(rss)
-            channel = root.find("channel")
-            for item in channel.iter("item"):
-                title = item.find("title").text
-                poster = item.find("enclosure").get("url")
-                poster = self.fixUpPosterImage(poster)
-                movies.append({
-                    "platform": "Fandango",
-                    "category": category,
-                    "title": title,
-                    "poster": poster,
-                })
-
+        async with self.session.get(url) as resp:
+            data = await resp.json()
+            min_date = datetime.datetime.strptime(data["dates"]["minimum"], "%Y-%m-%d")
+            results = data["results"]
+            for item in results:
+                if (
+                    not item["adult"]
+                    and not item["video"]
+                    and item["original_language"] == "en"
+                ):
+                    release_date = datetime.datetime.strptime(
+                        item["release_date"], "%Y-%m-%d"
+                    )
+                    if release_date > min_date:
+                        movies.append(
+                            {
+                                "platform": "tmdb",
+                                "category": category,
+                                "title": item["title"],
+                                "release_date": item["release_date"],
+                                "poster": "https://image.tmdb.org/t/p/w780"
+                                + item["poster_path"],
+                            }
+                        )
 
     async def async_update(self):
         try:
             # make a new movie list
             movies = []
-            
+
             # get the updated feed data
-            await self.fillFandangoFeed("coming_soon", FANDANGO_COMINGSOON_RSS, movies)
-            await self.fillFandangoFeed("in_theaters", FANDANGO_NEWMOVIES_RSS, movies)
+            await self.fillFeed(
+                "coming_soon",
+                f"{self.base_url}/movie/upcoming?api_key={self.api_key}&language=en-US&page=1",
+                movies,
+            )
+
+            await self.fillFeed(
+                "in_theaters",
+                f"{self.base_url}/movie/now_playing?api_key={self.api_key}&language=en-US&page=1",
+                movies,
+            )
 
             # Set state to something meaningful? new date?
             self._state = datetime.datetime.now()
