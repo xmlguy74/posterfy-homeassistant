@@ -1,7 +1,7 @@
 """Posterfy sensor platform."""
 import logging
 import datetime
-import re
+from dateutil.relativedelta import relativedelta
 import aiohttp
 from typing import Any, Callable, Dict, Optional
 import voluptuous as vol
@@ -105,25 +105,31 @@ class PosterfyTmdbSensor(Entity):
     def extra_state_attributes(self) -> Dict[str, Any]:
         return self.attrs
 
-    async def fillFeed(self, category, url, movies):
+    async def fillFeed(self, platform, category, url, movies):
         # get the updated feed data
         async with self.session.get(url) as resp:
             data = await resp.json()
-            min_date = datetime.datetime.strptime(data["dates"]["minimum"], "%Y-%m-%d")
+            min_date = None
+            if "dates" in data:
+                min_date = datetime.datetime.strptime(
+                    data["dates"]["minimum"], "%Y-%m-%d"
+                )
+
             results = data["results"]
             for item in results:
                 if (
                     not item["adult"]
                     and not item["video"]
                     and item["original_language"] == "en"
+                    and item["poster_path"] is not None
                 ):
                     release_date = datetime.datetime.strptime(
                         item["release_date"], "%Y-%m-%d"
                     )
-                    if release_date > min_date:
+                    if min_date is None or release_date > min_date:
                         movies.append(
                             {
-                                "platform": "tmdb",
+                                "platform": platform,
                                 "category": category,
                                 "title": item["title"],
                                 "release_date": item["release_date"],
@@ -132,23 +138,65 @@ class PosterfyTmdbSensor(Entity):
                             }
                         )
 
+    def getRecentMovieProviderMoviesUrl(self, provider, release_date_gte):
+        return f"{self.base_url}/discover/movie?api_key={self.api_key}&language=en-US&sort_by=popularity.asc&include_adult=false&include_video=false&page=1&primary_release_date.gte={release_date_gte}&with_original_language=en&with_watch_providers={provider}&watch_region=US&with_watch_monetization_types=flatrate"
+
     async def async_update(self):
         try:
             # make a new movie list
             movies = []
 
-            # get the updated feed data
+            # coming soon
             await self.fillFeed(
+                "tmdb",
                 "coming_soon",
                 f"{self.base_url}/movie/upcoming?api_key={self.api_key}&language=en-US&page=1",
                 movies,
             )
 
+            # in theaters
             await self.fillFeed(
+                "tmdb",
                 "in_theaters",
                 f"{self.base_url}/movie/now_playing?api_key={self.api_key}&language=en-US&page=1",
                 movies,
             )
+
+            previous_month = datetime.datetime.today() - relativedelta(months=1)
+            previous_month = previous_month.strftime("%Y-%m-%d")
+
+            # netflix
+            await self.fillFeed(
+                "netflix",
+                "streaming",
+                self.getRecentMovieProviderMoviesUrl(8, previous_month),
+                movies,
+            )
+
+            # prime
+            await self.fillFeed(
+                "prime",
+                "streaming",
+                self.getRecentMovieProviderMoviesUrl(9, previous_month),
+                movies,
+            )
+
+            # hbomax
+            await self.fillFeed(
+                "hbomax",
+                "streaming",
+                self.getRecentMovieProviderMoviesUrl(384, previous_month),
+                movies,
+            )
+
+            # TODO: The disney feed data isn't looking right. Leaving out for now.
+            # # disneyplus
+            # await self.fillFeed(
+            #     "disneyplus",
+            #     "streaming",
+            #     self.getRecentMovieProviderMoviesUrl(337, previous_month),
+            #     movies,
+            # )
 
             # Set state to something meaningful? new date?
             self._state = datetime.datetime.now()
