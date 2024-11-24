@@ -12,9 +12,9 @@ from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.typing import (
     ConfigType,
-    DiscoveryInfoType,
-    HomeAssistantType,
+    DiscoveryInfoType
 )
+from homeassistant.core import HomeAssistant
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.const import (
