@@ -182,12 +182,12 @@ class PosterfyTmdbSensor(Entity):
             )
 
             # hbomax
-            await self.fillFeed(
-                "hbomax",
-                "streaming",
-                self.getRecentMovieProviderMoviesUrl(384, previous_month),
-                movies,
-            )
+            # await self.fillFeed(
+            #     "hbomax",
+            #     "streaming",
+            #     self.getRecentMovieProviderMoviesUrl(384, previous_month),
+            #     movies,
+            # )
 
             # TODO: The disney feed data isn't looking right. Leaving out for now.
             # # disneyplus
